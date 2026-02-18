@@ -1,0 +1,409 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>手势识别+粒子特效</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            min-height: 100vh;
+            background: #000;
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+            overflow: hidden;
+        }
+
+        #video-container {
+            position: fixed;
+            width: 1px;
+            height: 1px;
+            overflow: hidden;
+            opacity: 0;
+            pointer-events: none;
+        }
+
+        #video {
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+            transform: scaleX(-1);
+            display: none;
+        }
+
+        #canvas {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            transform: scaleX(-1);
+        }
+
+        #display {
+            position: fixed;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            font-size: 0px;
+            font-weight: bold;
+            color: transparent;
+            text-shadow: none;
+            z-index: 100;
+            pointer-events: none;
+            transition: all 0.3s ease;
+        }
+
+        #particles {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            pointer-events: none;
+            z-index: 50;
+        }
+
+        #loading {
+            position: fixed;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            color: white;
+            font-size: 24px;
+            z-index: 200;
+        }
+
+        #error {
+            position: fixed;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            background: rgba(255, 0, 0, 0.8);
+            color: white;
+            padding: 20px;
+            border-radius: 10px;
+            font-size: 18px;
+            max-width: 300px;
+            text-align: center;
+            display: none;
+            z-index: 300;
+        }
+    </style>
+</head>
+<body>
+    <div id="loading">加载中... 请授予摄像头权限</div>
+    <div id="error"></div>
+
+    <div id="video-container">
+        <video id="video" autoplay playsinline></video>
+        <canvas id="canvas"></canvas>
+    </div>
+
+    <div id="display">0</div>
+    <canvas id="particles"></canvas>
+
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands@0.4.1675469240/hands.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils@0.3.1675466862/camera_utils.js"></script>
+
+    <script>
+        const video = document.getElementById('video');
+        const canvas = document.getElementById('canvas');
+        const ctx = canvas.getContext('2d');
+        const display = document.getElementById('display');
+        const particlesCanvas = document.getElementById('particles');
+        const pCtx = particlesCanvas.getContext('2d');
+        const loading = document.getElementById('loading');
+        const error = document.getElementById('error');
+
+        let currentNumber = 0;
+        let particles = [];
+
+        // 粒子类
+        class Particle {
+            constructor(x, y, color) {
+                this.x = x;
+                this.y = y;
+                this.color = color;
+                this.baseX = x;
+                this.baseY = y;
+                this.targetX = x;
+                this.targetY = y;
+                this.size = Math.random() * 5 + 2;
+                this.speedX = (Math.random() - 0.5) * 2;
+                this.speedY = (Math.random() - 0.5) * 2;
+                this.life = 1;
+                this.inNumber = false;
+            }
+
+            update() {
+                if (this.inNumber) {
+                    // 组成数字，向目标位置移动
+                    this.x += (this.targetX - this.x) * 0.1;
+                    this.y += (this.targetY - this.y) * 0.1;
+                } else {
+                    // 自由漂浮
+                    this.x += this.speedX;
+                    this.y += this.speedY;
+
+                    // 边界反弹
+                    if (this.x < 0 || this.x > particlesCanvas.width) this.speedX *= -1;
+                    if (this.y < 0 || this.y > particlesCanvas.height) this.speedY *= -1;
+                }
+            }
+
+            draw() {
+                pCtx.fillStyle = this.color;
+                pCtx.beginPath();
+                pCtx.arc(this.x, this.y, this.size, 0, Math.PI * 2);
+                pCtx.fill();
+            }
+
+            setTarget(x, y) {
+                this.targetX = x;
+                this.targetY = y;
+                this.inNumber = true;
+            }
+
+            freeFloat() {
+                this.inNumber = false;
+                this.speedX = (Math.random() - 0.5) * 2;
+                this.speedY = (Math.random() - 0.5) * 2;
+            }
+        }
+
+        // 初始化粒子
+        function initParticles(count = 300) {
+            const colors = [
+                '#ff0000', '#ff6600', '#ffff00', '#00ff00',
+                '#00ffff', '#0066ff', '#9900ff', '#ff00ff',
+                '#ff0066', '#00ff99'
+            ];
+            for (let i = 0; i < count; i++) {
+                const x = Math.random() * window.innerWidth;
+                const y = Math.random() * window.innerHeight;
+                const color = colors[Math.floor(Math.random() * colors.length)];
+                particles.push(new Particle(x, y, color));
+            }
+        }
+
+        // 调整画布大小
+        function resizeCanvas() {
+            canvas.width = video.videoWidth;
+            canvas.height = video.videoHeight;
+            particlesCanvas.width = window.innerWidth;
+            particlesCanvas.height = window.innerHeight;
+        }
+
+        // 更新粒子
+        function updateParticles() {
+            pCtx.clearRect(0, 0, particlesCanvas.width, particlesCanvas.height);
+
+            for (let i = 0; i < particles.length; i++) {
+                const p = particles[i];
+                p.update();
+                p.draw();
+            }
+
+            requestAnimationFrame(updateParticles);
+        }
+
+        // 计算手指数量
+        function countFingers(landmarks) {
+            const fingerTips = [4, 8, 12, 16, 20]; // 拇指、食指、中指、无名指、小指的指尖
+            const fingerMcp = [2, 5, 9, 13, 17]; // 手指根部
+
+            let count = 0;
+
+            // 拇指（特殊处理）
+            const thumbOpen = Math.abs(landmarks[4].x - landmarks[3].x) > 0.05;
+            if (thumbOpen) count++;
+
+            // 其他四指
+            for (let i = 1; i < 5; i++) {
+                const tipY = landmarks[fingerTips[i]].y;
+                const mcpY = landmarks[fingerMcp[i]].y;
+                const pipY = landmarks[fingerTips[i] - 2].y;
+
+                if (tipY < Math.min(mcpY, pipY)) {
+                    count++;
+                }
+            }
+
+            return count;
+        }
+
+        // 更新显示
+        function updateDisplay(number) {
+            if (number !== currentNumber) {
+                currentNumber = number;
+                display.textContent = number;
+
+                // 颜色根据数字变化
+                const colors = [
+                    '#ff0000', '#ff6600', '#ffff00', '#00ff00',
+                    '#00ffff', '#0066ff', '#9900ff', '#ff00ff',
+                    '#ff0066', '#00ff99'
+                ];
+                const color = colors[number % colors.length];
+
+                display.style.color = color;
+                display.style.textShadow = `0 0 30px ${color}, 0 0 60px ${color}`;
+
+                // 粒子组成数字
+                const centerX = window.innerWidth / 2;
+                const centerY = window.innerHeight / 2;
+                const radius = 100;
+
+                // 将粒子分配到圆形区域形成数字
+                const particlesPerNumber = Math.min(particles.length, 100);
+                for (let i = 0; i < particlesPerNumber; i++) {
+                    const angle = (i / particlesPerNumber) * Math.PI * 2;
+                    const x = centerX + Math.cos(angle) * radius;
+                    const y = centerY + Math.sin(angle) * radius;
+                    particles[i].setTarget(x, y);
+                }
+
+                // 剩余粒子自由漂浮
+                for (let i = particlesPerNumber; i < particles.length; i++) {
+                    particles[i].freeFloat();
+                }
+            }
+        }
+
+        // 绘制手部骨架
+        function drawHand(landmarks) {
+            const connections = [
+                [0, 1], [1, 2], [2, 3], [3, 4],
+                [0, 5], [5, 6], [6, 7], [7, 8],
+                [0, 9], [9, 10], [10, 11], [11, 12],
+                [0, 13], [13, 14], [14, 15], [15, 16],
+                [0, 17], [17, 18], [18, 19], [19, 20],
+                [5, 9], [9, 13], [13, 17]
+            ];
+
+            ctx.strokeStyle = '#00ff00';
+            ctx.lineWidth = 3;
+
+            for (const connection of connections) {
+                const [start, end] = connection;
+                const startLandmark = landmarks[start];
+                const endLandmark = landmarks[end];
+
+                ctx.beginPath();
+                ctx.moveTo(startLandmark.x * canvas.width, startLandmark.y * canvas.height);
+                ctx.lineTo(endLandmark.x * canvas.width, endLandmark.y * canvas.height);
+                ctx.stroke();
+            }
+
+            // 绘制关键点
+            for (const landmark of landmarks) {
+                ctx.fillStyle = '#ff0000';
+                ctx.beginPath();
+                ctx.arc(landmark.x * canvas.width, landmark.y * canvas.height, 5, 0, Math.PI * 2);
+                ctx.fill();
+            }
+        }
+
+        // MediaPipe回调
+        function onResults(results) {
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+            let hasHand = false;
+
+            if (results.multiHandLandmarks && results.multiHandLandmarks.length > 0) {
+                hasHand = true;
+                for (const landmarks of results.multiHandLandmarks) {
+                    drawHand(landmarks);
+                    const fingers = countFingers(landmarks);
+                    updateDisplay(fingers);
+                }
+            }
+
+            // 没有手势时，粒子自由漂浮
+            if (!hasHand) {
+                currentNumber = -1;
+                display.textContent = '';
+                particles.forEach(p => p.freeFloat());
+            }
+        }
+
+        // 初始化摄像头和MediaPipe
+        async function init() {
+            try {
+                console.log('开始初始化...');
+
+                // 检查浏览器支持
+                if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+                    throw new Error('您的浏览器不支持摄像头访问');
+                }
+
+                console.log('请求摄像头权限...');
+                const stream = await navigator.mediaDevices.getUserMedia({ 
+                    video: { 
+                        facingMode: 'user',
+                        width: { ideal: 640 },
+                        height: { ideal: 480 }
+                    } 
+                });
+                console.log('摄像头已获得');
+
+                video.srcObject = stream;
+                
+                await video.play();
+                console.log('视频播放中');
+
+                resizeCanvas();
+                loading.style.display = 'none';
+                console.log('加载完成');
+
+                const hands = new Hands({locateFile: (file) => {
+                    return `https://cdn.jsdelivr.net/npm/@mediapipe/hands@0.4.1675469240/${file}`;
+                }});
+
+                hands.setOptions({
+                    maxNumHands: 2,
+                    modelComplexity: 1,
+                    minDetectionConfidence: 0.5,
+                    minTrackingConfidence: 0.5
+                });
+
+                hands.onResults(onResults);
+
+                // 手动循环，不使用Camera
+                async function frameLoop() {
+                    if (video.readyState >= video.HAVE_CURRENT_DATA) {
+                        await hands.send({image: video});
+                    }
+                    requestAnimationFrame(frameLoop);
+                }
+
+                frameLoop();
+                initParticles();
+                updateParticles();
+                console.log('手势识别已启动');
+
+            } catch (err) {
+                loading.style.display = 'none';
+                error.style.display = 'block';
+                error.textContent = '摄像头访问失败：' + err.message;
+                console.error('详细错误:', err);
+            }
+        }
+
+        // 窗口大小改变时调整画布
+        window.addEventListener('resize', resizeCanvas);
+
+        // 启动
+        init();
+    </script>
+</body>
+</html>
